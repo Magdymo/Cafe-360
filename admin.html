@@ -13,7 +13,7 @@
 
 <form id="login" class="login" hidden>
   <h2>دخول الإدارة</h2>
-  <input id="em" type="email" placeholder="البريد الإلكتروني" autocomplete="username" required>
+  <input id="em" type="email" placeholder="البريد الإلكتروني" autocomplete="username" autocapitalize="off" required>
   <input id="pw" type="password" placeholder="كلمة المرور" autocomplete="current-password" required>
   <button>دخول</button>
   <p id="lerr" class="err"></p>
@@ -21,21 +21,47 @@
 
 <div id="app" class="wrap" hidden>
   <div class="oh"><h2>360 Cafe</h2><button id="out">خروج</button></div>
-  <div class="tabs">
+  <p id="noacc" class="msg" hidden>هذا الحساب ليس له صلاحية. اطلب من المدير إضافته.</p>
+  <div id="tabs" class="tabs">
     <button id="t1" class="on">الطلبات</button>
-    <button id="t2">المنيو</button>
+    <button id="t2" hidden>المنيو</button>
+    <button id="t3" hidden>الفريق</button>
   </div>
   <div id="pOrders"><div id="list"></div></div>
   <div id="pMenu" hidden>
-    <form id="addf" class="add">
-      <input id="ac" list="dl" placeholder="القسم" required>
-      <input id="an" placeholder="اسم الصنف" required>
-      <input id="ap" type="number" min="0" placeholder="السعر" required>
-      <button>إضافة</button>
-    </form>
-    <datalist id="dl"></datalist>
+    <button onclick="edit(0)" style="width:100%;margin-bottom:8px">+ إضافة صنف</button>
     <div id="mlist"></div>
   </div>
+  <div id="pTeam" hidden>
+    <h3>إضافة موظف</h3>
+    <form id="tf" class="fld">
+      <input id="tn" type="text" placeholder="اسم الموظف">
+      <input id="te" type="email" placeholder="بريد الموظف" autocapitalize="off" required>
+      <input id="tp" type="text" placeholder="كلمة مرور (6 أحرف على الأقل)" minlength="6" required>
+      <button>إضافة موظف</button>
+    </form>
+    <p class="msg" style="padding:8px">الموظف يرى الطلبات فقط ولا يعدّل المنيو.</p>
+    <div id="tlist"></div>
+  </div>
+</div>
+
+<div id="modal" class="sheet" hidden>
+  <h2 id="mt">صنف</h2>
+  <form id="ef">
+    <input id="eid" type="hidden">
+    <div class="fld"><label for="ec">القسم</label><input id="ec" type="text" list="dl" required></div>
+    <datalist id="dl"></datalist>
+    <div class="fld"><label for="en">اسم الصنف</label><input id="en" type="text" required></div>
+    <div class="fld"><label for="ep">السعر (ج.م)</label><input id="ep" type="number" min="0" step="any" required></div>
+    <label style="display:flex;gap:8px;margin-bottom:12px"><input id="ea" type="checkbox"> متاح للطلب</label>
+    <div class="fld">
+      <label>الصورة (اختيارية)</label>
+      <img id="ei" class="prev" alt="" hidden>
+      <input id="ef2" type="file" accept="image/*">
+      <button type="button" id="rm" class="dng" hidden>إزالة الصورة</button>
+    </div>
+    <div class="row2"><button id="sv">حفظ</button><button type="button" class="ghost" id="cx" style="margin:0">إلغاء</button></div>
+  </form>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
@@ -45,15 +71,21 @@
 const sb=supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
 const $=id=>document.getElementById(id);
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let ac,menu=[],chan;
+let ac,menu=[],chan,role=null,img; // img: undefined بدون تغيير، null إزالة، Blob صورة جديدة
 document.addEventListener('click',()=>{try{ac=ac||new AudioContext();ac.resume()}catch(e){}});
 function beep(){try{const o=ac.createOscillator();o.connect(ac.destination);o.frequency.value=880;o.start();o.stop(ac.currentTime+.4)}catch(e){}}
-function toast(t){const d=document.createElement('div');d.className='toast';d.textContent=t;document.body.append(d);setTimeout(()=>d.remove(),1400)}
+function toast(t,bad){const d=document.createElement('div');d.className='toast'+(bad?' bad':'');d.textContent=t;document.body.append(d);setTimeout(()=>d.remove(),bad?3500:1400)}
 
 async function start(){
   const {data:{session}}=await sb.auth.getSession();
   $('login').hidden=!!session;$('app').hidden=!session;
-  if(session){loadOrders();loadMenu();listen()}
+  if(!session)return;
+  const {data:s}=await sb.from('staff').select('role').eq('user_id',session.user.id).maybeSingle();
+  role=s&&s.role;
+  if(!role){$('noacc').hidden=false;$('tabs').hidden=true;$('pOrders').hidden=true;return}
+  $('t2').hidden=$('t3').hidden=role!=='admin';
+  loadOrders();listen();
+  if(role==='admin'){loadMenu();loadTeam()}
 }
 $('login').onsubmit=async e=>{
   e.preventDefault();$('lerr').textContent='';
@@ -62,8 +94,11 @@ $('login').onsubmit=async e=>{
   start();
 };
 $('out').onclick=async()=>{await sb.auth.signOut();location.reload()};
-function tab(n){$('pOrders').hidden=n!==1;$('pMenu').hidden=n!==2;$('t1').className=n===1?'on':'';$('t2').className=n===2?'on':''}
-$('t1').onclick=()=>tab(1);$('t2').onclick=()=>tab(2);
+function tab(n){
+  $('pOrders').hidden=n!==1;$('pMenu').hidden=n!==2;$('pTeam').hidden=n!==3;
+  [1,2,3].forEach(k=>$('t'+k).className=k===n?'on':'');
+}
+$('t1').onclick=()=>tab(1);$('t2').onclick=()=>tab(2);$('t3').onclick=()=>tab(3);
 
 /* الطلبات */
 async function loadOrders(){
@@ -83,29 +118,85 @@ function listen(){
 async function loadMenu(){
   const {data}=await sb.from('menu_items').select('*').order('sort');
   menu=data||[];
-  if(!menu.length){$('mlist').innerHTML='<p class="msg">المنيو فارغ.</p><button class="main" style="width:100%" onclick="seed()">استيراد المنيو الأساسي</button>';return}
+  if(!menu.length){$('mlist').innerHTML='<p class="msg">المنيو فارغ.</p><button style="width:100%" onclick="seed()">استيراد المنيو الأساسي</button>';return}
   const cats=[...new Set(menu.map(i=>i.category))];
   $('dl').innerHTML=cats.map(c=>`<option value="${esc(c)}">`).join('');
-  $('mlist').innerHTML=cats.map(c=>`<h3>${esc(c)}</h3>`+menu.filter(i=>i.category===c).map(i=>`<div class="mr">
-    <input value="${esc(i.name)}" onchange="up(${i.id},{name:this.value})">
-    <input type="number" value="${i.price}" onchange="up(${i.id},{price:+this.value})">
-    <label><input type="checkbox" ${i.available?'checked':''} onchange="up(${i.id},{available:this.checked})"> متاح</label>
-    <button onclick="del(${i.id})">حذف</button></div>`).join('')).join('');
+  $('mlist').innerHTML=cats.map(c=>`<h3>${esc(c)}</h3>`+menu.filter(i=>i.category===c).map(i=>`<div class="mi">
+    ${i.image_url?`<img src="${esc(i.image_url)}" alt="">`:'<span class="ph"></span>'}
+    <div class="mn">${esc(i.name)}<small>${i.price} ج.م${i.available?'':' · غير متاح'}</small></div>
+    <button onclick="edit(${i.id})">تعديل</button><button class="dng" onclick="del(${i.id})">حذف</button></div>`).join('')).join('');
 }
-async function up(id,p){const {error}=await sb.from('menu_items').update(p).eq('id',id);toast(error?'لم يُحفظ، حاول مرة أخرى':'تم الحفظ')}
-async function del(id){if(!confirm('حذف الصنف؟'))return;await sb.from('menu_items').delete().eq('id',id);loadMenu()}
-$('addf').onsubmit=async e=>{
-  e.preventDefault();
-  const sort=menu.reduce((m,i)=>Math.max(m,i.sort),0)+1;
-  const {error}=await sb.from('menu_items').insert({category:$('ac').value.trim(),name:$('an').value.trim(),price:+$('ap').value,sort});
-  if(error){toast('لم تتم الإضافة');return}
-  $('an').value='';$('ap').value='';toast('تمت الإضافة');loadMenu();
+function showImg(url){$('ei').hidden=!url;$('rm').hidden=!url;if(url)$('ei').src=url}
+function edit(id){
+  const i=menu.find(x=>x.id===id)||{category:'',name:'',price:'',available:true,image_url:null};
+  $('mt').textContent=id?'تعديل صنف':'إضافة صنف';
+  $('eid').value=id;$('ec').value=i.category;$('en').value=i.name;$('ep').value=i.price;$('ea').checked=i.available;
+  $('ef2').value='';img=undefined;showImg(i.image_url);$('modal').hidden=false;
+}
+const closeM=()=>{$('modal').hidden=true};
+$('cx').onclick=closeM;
+$('rm').onclick=()=>{img=null;$('ef2').value='';showImg(null)};
+function shrink(file){return new Promise((ok,no)=>{
+  const im=new Image();
+  im.onload=()=>{const s=Math.min(1,700/Math.max(im.width,im.height)),c=document.createElement('canvas');c.width=im.width*s;c.height=im.height*s;c.getContext('2d').drawImage(im,0,0,c.width,c.height);c.toBlob(ok,'image/jpeg',.8)};
+  im.onerror=no;im.src=URL.createObjectURL(file);
+})}
+$('ef2').onchange=async e=>{
+  const f=e.target.files[0];if(!f)return;
+  try{img=await shrink(f);showImg(URL.createObjectURL(img))}catch(x){toast('تعذر قراءة الصورة',1)}
 };
+$('ef').onsubmit=async e=>{
+  e.preventDefault();$('sv').disabled=true;
+  const id=+$('eid').value;
+  const row={category:$('ec').value.trim(),name:$('en').value.trim(),price:+$('ep').value,available:$('ea').checked};
+  try{
+    if(img instanceof Blob){
+      const path=Date.now()+'-'+Math.random().toString(36).slice(2,8)+'.jpg';
+      const {error:ue}=await sb.storage.from('menu').upload(path,img,{contentType:'image/jpeg'});
+      if(ue)throw ue;
+      row.image_url=sb.storage.from('menu').getPublicUrl(path).data.publicUrl;
+    }else if(img===null)row.image_url=null;
+    let r;
+    if(id)r=await sb.from('menu_items').update(row).eq('id',id);
+    else{row.sort=menu.reduce((m,i)=>Math.max(m,i.sort),0)+1;r=await sb.from('menu_items').insert(row)}
+    if(r.error)throw r.error;
+    closeM();toast('تم الحفظ');loadMenu();
+  }catch(err){toast('لم يُحفظ: '+err.message,1)}
+  $('sv').disabled=false;
+};
+async function del(id){
+  if(!confirm('حذف الصنف؟'))return;
+  const {error}=await sb.from('menu_items').delete().eq('id',id);
+  if(error)toast('لم يُحذف: '+error.message,1);
+  loadMenu();
+}
 async function seed(){
   let n=0;const rows=[];
   SEED.forEach(([category,list])=>list.forEach(([name,price])=>rows.push({category,name,price,sort:++n})));
   const {error}=await sb.from('menu_items').insert(rows);
-  toast(error?'فشل الاستيراد':'تم استيراد المنيو');loadMenu();
+  toast(error?'فشل الاستيراد':'تم استيراد المنيو',!!error);loadMenu();
+}
+
+/* الفريق */
+async function loadTeam(){
+  const {data}=await sb.from('staff').select('*').order('role');
+  $('tlist').innerHTML=(data||[]).map(s=>`<div class="mi"><div class="mn">${esc(s.name||s.email||'بدون اسم')}<small>${s.role==='admin'?'مدير':'موظف'}${s.email?' · '+esc(s.email):''}</small></div>${s.role==='staff'?`<button class="dng" onclick="rmStaff('${s.user_id}')">إيقاف</button>`:''}</div>`).join('');
+}
+$('tf').onsubmit=async e=>{
+  e.preventDefault();
+  const email=$('te').value.trim(),password=$('tp').value;
+  const tmp=supabase.createClient(SUPABASE_URL,SUPABASE_KEY,{auth:{persistSession:false,autoRefreshToken:false,detectSessionInUrl:false}});
+  const {data,error}=await tmp.auth.signUp({email,password});
+  if(error||!data.user){toast('تعذر إنشاء الحساب: '+(error?error.message:''),1);return}
+  const {error:e2}=await sb.from('staff').insert({user_id:data.user.id,email,name:$('tn').value.trim()||null,role:'staff'});
+  if(e2){toast('تعذر إضافة الموظف: '+e2.message,1);return}
+  $('tf').reset();toast('تمت إضافة الموظف');loadTeam();
+};
+async function rmStaff(id){
+  if(!confirm('إيقاف هذا الموظف؟ لن يستطيع رؤية الطلبات.'))return;
+  const {error}=await sb.from('staff').delete().eq('user_id',id);
+  if(error)toast('تعذر الإيقاف: '+error.message,1);
+  loadTeam();
 }
 start();
 </script>

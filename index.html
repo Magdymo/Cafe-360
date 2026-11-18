@@ -37,7 +37,7 @@ const sb=supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
 const T=new URLSearchParams(location.search).get('table');
 const $=id=>document.getElementById(id);
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let items=[],cart={};
+let items=[],cart={},cur=0; // cur: رقم القسم، و -1 يعني الكل
 
 $('tb').textContent=T?'ترابيزة رقم '+T:'افتح الصفحة من باركود الترابيزة لإرسال طلبك';
 
@@ -52,10 +52,13 @@ function row(i){
   <div class="nm">${esc(i.name)}<b>${i.price} ج.م</b></div>
   <div class="qty">${q?`<button aria-label="إنقاص" onclick="chg(${i.id},-1)">−</button><span>${q}</span>`:''}<button aria-label="إضافة" onclick="chg(${i.id},1)">+</button></div></div>`;
 }
+function pick(k){cur=k;render();window.scrollTo({top:0})}
 function render(){
   const cats=[...new Set(items.map(i=>i.category))];
-  $('chips').innerHTML=cats.map((c,k)=>`<a href="#c${k}">${esc(c)}</a>`).join('');
-  $('menu').innerHTML=cats.map((c,k)=>`<section id="c${k}"><h2 style="direction:ltr;text-align:left">${esc(c)}</h2>${items.filter(i=>i.category===c).map(row).join('')}</section>`).join('');
+  if(cur>=cats.length)cur=0;
+  $('chips').innerHTML=`<button class="${cur===-1?'on':''}" onclick="pick(-1)">الكل</button>`+cats.map((c,k)=>`<button class="${cur===k?'on':''}" onclick="pick(${k})">${esc(c)}</button>`).join('');
+  const show=cur===-1?cats:[cats[cur]];
+  $('menu').innerHTML=show.map(c=>`<section><h2 style="direction:ltr;text-align:left">${esc(c)}</h2>${items.filter(i=>i.category===c).map(row).join('')}</section>`).join('');
   bar();
 }
 function chg(id,d){
