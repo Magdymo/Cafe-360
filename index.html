@@ -34,40 +34,65 @@
 <script src="config.js"></script>
 <script>
 const sb=supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
-const T=new URLSearchParams(location.search).get('table');
 const $=id=>document.getElementById(id);
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let items=[],cart={},cur=0; // cur: رقم القسم، و -1 يعني الكل
+
+// رقم الترابيزة: لازم رقم صحيح من 1 إلى 3 خانات، وإلا يبقى null
+// (التحقق النهائي من الحد الأقصى بيتم في قاعدة البيانات)
+const rawT=new URLSearchParams(location.search).get('table');
+const T=/^[0-9]{1,3}$/.test(rawT||'')&&parseInt(rawT,10)>=1?parseInt(rawT,10):null;
+
+let items=[],cart={},cur=0,sending=false; // cur: رقم القسم، و -1 يعني الكل
 
 $('tb').textContent=T?'ترابيزة رقم '+T:'افتح الصفحة من باركود الترابيزة لإرسال طلبك';
 
 async function init(){
   const {data,error}=await sb.from('menu_items').select('*').eq('available',true).order('sort');
-  if(error){$('menu').innerHTML='<p class="msg">تعذر تحميل المنيو. حدّث الصفحة.</p>';return}
-  items=data;render();
+  if(error){
+    console.error('فشل تحميل المنيو:',error);
+    $('menu').innerHTML='<p class="msg">تعذر تحميل المنيو. حدّث الصفحة.</p>';
+    return;
+  }
+  items=data;
+  // شيل أي صنف في السلة مبقاش موجود في المنيو
+  Object.keys(cart).forEach(k=>{if(!items.some(i=>String(i.id)===k))delete cart[k]});
+  render();
 }
+const qtyOf=i=>cart[String(i.id)]||0;
 function row(i){
-  const q=cart[i.id]||0;
-  return `<div class="it" data-id="${i.id}">${i.image_url?`<img src="${esc(i.image_url)}" alt="">`:''}
-  <div class="nm">${esc(i.name)}<b>${i.price} ج.م</b></div>
-  <div class="qty">${q?`<button aria-label="إنقاص" onclick="chg(${i.id},-1)">−</button><span>${q}</span>`:''}<button aria-label="إضافة" onclick="chg(${i.id},1)">+</button></div></div>`;
+  const q=qtyOf(i);
+  return `<div class="it" data-id="${esc(i.id)}">${i.image_url?`<img src="${esc(i.image_url)}" alt="">`:''}
+  <div class="nm">${esc(i.name)}<b>${esc(i.price)} ج.م</b></div>
+  <div class="qty">${q?`<button aria-label="إنقاص" data-d="-1">−</button><span>${q}</span>`:''}<button aria-label="إضافة" data-d="1">+</button></div></div>`;
 }
 function pick(k){cur=k;render();window.scrollTo({top:0})}
 function render(){
   const cats=[...new Set(items.map(i=>i.category))];
   if(cur>=cats.length)cur=0;
-  $('chips').innerHTML=`<button class="${cur===-1?'on':''}" onclick="pick(-1)">الكل</button>`+cats.map((c,k)=>`<button class="${cur===k?'on':''}" onclick="pick(${k})">${esc(c)}</button>`).join('');
+  $('chips').innerHTML=`<button class="${cur===-1?'on':''}" data-k="-1">الكل</button>`+cats.map((c,k)=>`<button class="${cur===k?'on':''}" data-k="${k}">${esc(c)}</button>`).join('');
   const show=cur===-1?cats:[cats[cur]];
   $('menu').innerHTML=show.map(c=>`<section><h2 style="direction:ltr;text-align:left">${esc(c)}</h2>${items.filter(i=>i.category===c).map(row).join('')}</section>`).join('');
   bar();
 }
 function chg(id,d){
-  cart[id]=Math.max(0,(cart[id]||0)+d);
-  const it=items.find(i=>i.id===id),el=document.querySelector(`[data-id="${id}"]`);
-  if(el)el.outerHTML=row(it);
+  cart[id]=Math.max(0,Math.min(20,(cart[id]||0)+d));
+  if(!cart[id])delete cart[id];
+  const it=items.find(i=>String(i.id)===id);
+  const el=[...document.querySelectorAll('.it')].find(e=>e.dataset.id===id);
+  if(it&&el)el.outerHTML=row(it);
   bar();
 }
-function lines(){return items.filter(i=>cart[i.id]).map(i=>({name:i.name,price:i.price,qty:cart[i.id]}))}
+$('menu').addEventListener('click',e=>{
+  const b=e.target.closest('button[data-d]');if(!b)return;
+  chg(b.closest('.it').dataset.id,parseInt(b.dataset.d,10));
+});
+$('chips').addEventListener('click',e=>{
+  const b=e.target.closest('button[data-k]');if(!b)return;
+  pick(parseInt(b.dataset.k,10));
+});
+
+// الأسعار هنا للعرض فقط، الإجمالي الحقيقي بيتحسب في قاعدة البيانات
+function lines(){return items.filter(i=>qtyOf(i)).map(i=>({id:i.id,name:i.name,price:i.price,qty:qtyOf(i)}))}
 function sum(l){return l.reduce((a,x)=>a+x.qty*x.price,0)}
 function bar(){
   const l=lines(),n=l.reduce((a,x)=>a+x.qty,0);
@@ -83,14 +108,36 @@ $('open').onclick=()=>{
   $('cartv').hidden=false;$('donev').hidden=true;$('sheet').hidden=false;
 };
 $('back').onclick=()=>{$('sheet').hidden=true};
+
+function failMsg(error){
+  const m=String((error&&error.message)||error||'');
+  if(m.includes('invalid_table'))return 'رقم الترابيزة غير صحيح. امسح باركود الترابيزة مرة أخرى.';
+  if(m.includes('item_unavailable'))return 'صنف من طلبك لم يعد متاحاً. رجّع للمنيو وراجع طلبك.';
+  if(m.includes('invalid_qty')||m.includes('invalid_items'))return 'في مشكلة في كميات الطلب. راجع طلبك وحاول مرة أخرى.';
+  return 'لم يصل الطلب. حاول مرة أخرى.';
+}
+
 $('send').onclick=async()=>{
-  const l=lines();if(!l.length||!T)return;
-  $('send').disabled=true;
-  const {error}=await sb.from('orders').insert({table_no:T,items:l,total:sum(l)});
-  if(error){$('send').disabled=false;$('err').textContent='لم يصل الطلب. حاول مرة أخرى.';return}
-  cart={};render();
-  $('dmsg').textContent='ترابيزة '+T+' · هيوصلك قريباً';
-  $('cartv').hidden=true;$('donev').hidden=false;
+  const l=lines();
+  if(!l.length||!T||sending)return;
+  sending=true;$('send').disabled=true;$('err').textContent='';
+  try{
+    const {error}=await sb.rpc('place_order',{p_table:T,p_items:l.map(x=>({id:x.id,qty:x.qty}))});
+    if(error){
+      console.error('فشل إرسال الطلب:',error);
+      $('err').textContent=failMsg(error);
+      if(String(error.message||'').includes('item_unavailable'))init();
+      return;
+    }
+    cart={};render();
+    $('dmsg').textContent='ترابيزة '+T+' · هيوصلك قريباً';
+    $('cartv').hidden=true;$('donev').hidden=false;
+  }catch(e){
+    console.error('خطأ غير متوقع أثناء الإرسال:',e);
+    $('err').textContent='لم يصل الطلب. تأكد من الاتصال بالإنترنت وحاول مرة أخرى.';
+  }finally{
+    sending=false;$('send').disabled=!T;
+  }
 };
 $('more').onclick=()=>{$('sheet').hidden=true};
 init();
