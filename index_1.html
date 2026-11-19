@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#9786c0">
+<title>360 Cafe</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<!-- ستايل أساسي داخل الصفحة نفسها: يمنع الشاشة البيضاء لحد ما الملفات الخارجية تتحمل -->
+<style>
+html{background:#efeafa}
+body{margin:0;background:#efeafa;font-family:Cairo,system-ui,-apple-system,"Segoe UI",Tahoma,sans-serif}
+.msg{text-align:center;padding:48px 16px;color:#5b4b8a}
+.it,.chips button,.qty button{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+</style>
+<link rel="stylesheet" href="style.css">
+<!-- الخط بيتحمل في الخلفية ومش بيعطّل ظهور الصفحة -->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;700;900&display=swap" media="print" onload="this.media='all'">
+<noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;700;900&display=swap"></noscript>
+</head>
+<body>
+<div class="rings"></div>
+<header class="top"><h1>360 CAFE</h1><p id="tb"></p></header>
+<nav id="chips" class="chips"></nav>
+<main id="menu"><p class="msg">جاري تحميل المنيو...</p></main>
+<div id="bar" class="bar" hidden><button id="open"></button></div>
+
+<div id="sheet" class="sheet" hidden>
+  <div id="cartv">
+    <h2>طلبك</h2>
+    <ul id="lines"></ul>
+    <div class="tot"><span>الإجمالي</span><span id="total"></span></div>
+    <button id="send" class="main">إرسال الطلب</button>
+    <p id="err" class="err"></p>
+    <button id="back" class="ghost">رجوع للمنيو</button>
+  </div>
+  <div id="donev" class="done" hidden>
+    <h2>وصل طلبك</h2>
+    <p id="dmsg"></p>
+    <button id="more" class="main" style="margin-top:24px">طلب إضافي</button>
+  </div>
+</div>
+
+<script src="config.js"></script>
+<script>
+const $=id=>document.getElementById(id);
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+// ===== الاتصال بقاعدة البيانات مباشرة (من غير مكتبة supabase-js الثقيلة) =====
+const SB_URL=String(SUPABASE_URL).replace(/\/+$/,'');
+const HDR={apikey:SUPABASE_KEY};
+// المفاتيح القديمة (eyJ...) بتتبعت كمان في Authorization، الجديدة (sb_publishable_...) لأ
+if(String(SUPABASE_KEY).startsWith('eyJ'))HDR.Authorization='Bearer '+SUPABASE_KEY;
+
+async function api(path,opts,ms){
+  opts=opts||{};
+  const ctl=new AbortController();
+  const t=setTimeout(()=>ctl.abort(),ms||10000);
+  try{
+    const r=await fetch(SB_URL+'/rest/v1/'+path,{
+      method:opts.method||'GET',
+      headers:Object.assign({},HDR,opts.headers||{}),
+      body:opts.body,
+      signal:ctl.signal
+    });
+    const body=await r.json().catch(()=>null);
+    if(!r.ok)return{data:null,error:body||{message:'http_'+r.status}};
+    return{data:body,error:null};
+  }catch(e){
+    return{data:null,error:e};
+  }finally{
+    clearTimeout(t);
+  }
+}
+
+// رقم الترابيزة: لازم رقم صحيح من 1 إلى 3 خانات، وإلا يبقى null
+// (التحقق النهائي من الحد الأقصى بيتم في قاعدة البيانات)
+const rawT=new URLSearchParams(location.search).get('table');
+const T=/^[0-9]{1,3}$/.test(rawT||'')&&parseInt(rawT,10)>=1?parseInt(rawT,10):null;
+
+let items=[],cart={},cur=0,sending=false; // cur: رقم القسم، و -1 يعني الكل
+
+$('tb').textContent=T?'ترابيزة رقم '+T:'افتح الصفحة من باركود الترابيزة لإرسال طلبك';
+
+// ===== كاش المنيو: المرة التانية بيظهر فورًا، وبعدها بيتحدث في الخلفية =====
+const CK='c360_menu_v1';
+function loadCache(){
+  try{const d=JSON.parse(localStorage.getItem(CK)||'null');return Array.isArray(d)&&d.length?d:null}catch(e){return null}
+}
+function saveCache(d){try{localStorage.setItem(CK,JSON.stringify(d))}catch(e){}}
+
+const MENU_Q='menu_items?select=*&available=eq.true&order=sort.asc';
+
+async function init(){
+  const cached=loadCache();
+  if(cached&&!items.length){items=cached;render()}
+  let res=await api(MENU_Q);
+  if(res.error)res=await api(MENU_Q); // محاولة تانية تلقائية
+  if(res.error){
+    console.error('فشل تحميل المنيو:',res.error);
+    if(!items.length){
+      $('menu').innerHTML='<p class="msg">تعذر تحميل المنيو. تأكد من الاتصال بالإنترنت.</p><p class="msg"><button class="main" onclick="location.reload()">إعادة المحاولة</button></p>';
+    }
+    return;
+  }
+  items=res.data;
+  saveCache(items);
+  // شيل أي صنف في السلة مبقاش موجود في المنيو
+  Object.keys(cart).forEach(k=>{if(!items.some(i=>String(i.id)===k))delete cart[k]});
+  render();
+}
+const qtyOf=i=>cart[String(i.id)]||0;
+function row(i){
+  const q=qtyOf(i);
+  return `<div class="it" data-id="${esc(i.id)}">${i.image_url?`<img src="${esc(i.image_url)}" alt="" loading="lazy" decoding="async">`:''}
+  <div class="nm">${esc(i.name)}<b>${esc(i.price)} ج.م</b></div>
+  <div class="qty">${q?`<button aria-label="إنقاص" data-d="-1">−</button><span>${q}</span>`:''}<button aria-label="إضافة" data-d="1">+</button></div></div>`;
+}
+function pick(k){cur=k;render();window.scrollTo({top:0})}
+function render(){
+  const cats=[...new Set(items.map(i=>i.category))];
+  if(cur>=cats.length)cur=0;
+  $('chips').innerHTML=`<button class="${cur===-1?'on':''}" data-k="-1">الكل</button>`+cats.map((c,k)=>`<button class="${cur===k?'on':''}" data-k="${k}">${esc(c)}</button>`).join('');
+  const show=cur===-1?cats:[cats[cur]];
+  $('menu').innerHTML=show.map(c=>`<section><h2 style="direction:ltr;text-align:left">${esc(c)}</h2>${items.filter(i=>i.category===c).map(row).join('')}</section>`).join('');
+  bar();
+}
+function chg(id,d){
+  cart[id]=Math.max(0,Math.min(20,(cart[id]||0)+d));
+  if(!cart[id])delete cart[id];
+  const it=items.find(i=>String(i.id)===id);
+  const el=[...document.querySelectorAll('.it')].find(e=>e.dataset.id===id);
+  if(it&&el)el.outerHTML=row(it);
+  bar();
+}
+$('menu').addEventListener('click',e=>{
+  const b=e.target.closest('button[data-d]');if(!b)return;
+  chg(b.closest('.it').dataset.id,parseInt(b.dataset.d,10));
+});
+$('chips').addEventListener('click',e=>{
+  const b=e.target.closest('button[data-k]');if(!b)return;
+  pick(parseInt(b.dataset.k,10));
+});
+
+// الأسعار هنا للعرض فقط، الإجمالي الحقيقي بيتحسب في قاعدة البيانات
+function lines(){return items.filter(i=>qtyOf(i)).map(i=>({id:i.id,name:i.name,price:i.price,qty:qtyOf(i)}))}
+function sum(l){return l.reduce((a,x)=>a+x.qty*x.price,0)}
+function bar(){
+  const l=lines(),n=l.reduce((a,x)=>a+x.qty,0);
+  $('bar').hidden=!n;
+  $('open').textContent=`مراجعة الطلب (${n}) · ${sum(l)} ج.م`;
+}
+$('open').onclick=()=>{
+  const l=lines();
+  $('lines').innerHTML=l.map(x=>`<li><span style="direction:ltr">${x.qty} × ${esc(x.name)}</span><span>${x.qty*x.price} ج.م</span></li>`).join('');
+  $('total').textContent=sum(l)+' ج.م';
+  $('err').textContent='';$('send').disabled=!T;
+  if(!T)$('err').textContent='لا يمكن الإرسال بدون رقم الترابيزة. امسح باركود الترابيزة.';
+  $('cartv').hidden=false;$('donev').hidden=true;$('sheet').hidden=false;
+};
+$('back').onclick=()=>{$('sheet').hidden=true};
+
+function failMsg(error){
+  const m=String((error&&error.message)||error||'');
+  if(m.includes('invalid_table'))return 'رقم الترابيزة غير صحيح. امسح باركود الترابيزة مرة أخرى.';
+  if(m.includes('item_unavailable'))return 'صنف من طلبك لم يعد متاحاً. رجّع للمنيو وراجع طلبك.';
+  if(m.includes('invalid_qty')||m.includes('invalid_items'))return 'في مشكلة في كميات الطلب. راجع طلبك وحاول مرة أخرى.';
+  return 'لم يصل الطلب. حاول مرة أخرى.';
+}
+
+$('send').onclick=async()=>{
+  const l=lines();
+  if(!l.length||!T||sending)return;
+  sending=true;$('send').disabled=true;$('err').textContent='';
+  try{
+    const {error}=await api('rpc/place_order',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({p_table:T,p_items:l.map(x=>({id:x.id,qty:x.qty}))})
+    },20000);
+    if(error){
+      console.error('فشل إرسال الطلب:',error);
+      $('err').textContent=failMsg(error);
+      if(String(error.message||'').includes('item_unavailable'))init();
+      return;
+    }
+    cart={};render();
+    $('dmsg').textContent='ترابيزة '+T+' · هيوصلك قريباً';
+    $('cartv').hidden=true;$('donev').hidden=false;
+  }catch(e){
+    console.error('خطأ غير متوقع أثناء الإرسال:',e);
+    $('err').textContent='لم يصل الطلب. تأكد من الاتصال بالإنترنت وحاول مرة أخرى.';
+  }finally{
+    sending=false;$('send').disabled=!T;
+  }
+};
+$('more').onclick=()=>{$('sheet').hidden=true};
+init();
+</script>
+</body>
+</html>
