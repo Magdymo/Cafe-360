@@ -7,6 +7,22 @@
 <title>360 Cafe - الإدارة</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;700;900&display=swap">
 <link rel="stylesheet" href="style.css">
+<style>
+.alt{background:#fff;color:var(--deep);border:2px solid var(--deep)}
+.acts{display:flex;gap:6px}
+#rc{display:none}
+@media print{
+  @page{margin:3mm}
+  body>*:not(#rc){display:none!important}
+  body{padding:0!important;background:#fff!important}
+  #rc{display:block;width:100%;max-width:72mm;margin:0 auto;font:12px/1.6 Cairo,Tahoma,sans-serif;color:#000;background:#fff}
+  #rc .rc-h{font-size:20px;font-weight:900;text-align:center}
+  #rc .rc-s{text-align:center}
+  #rc .rc-r{display:flex;justify-content:space-between;gap:8px}
+  #rc .rc-t{font-weight:900;font-size:15px}
+  #rc hr{border:0;border-top:1px dashed #000;margin:6px 0}
+}
+</style>
 </head>
 <body>
 <div class="rings"></div>
@@ -64,6 +80,8 @@
   </form>
 </div>
 
+<div id="rc"></div>
+
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
 <script src="config.js"></script>
 <script src="menu-seed.js"></script>
@@ -71,7 +89,7 @@
 const sb=supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
 const $=id=>document.getElementById(id);
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let ac,menu=[],chan,role=null,img; // img: undefined بدون تغيير، null إزالة، Blob صورة جديدة
+let ac,menu=[],chan,role=null,img,ORD=[]; // img: undefined بدون تغيير، null إزالة، Blob صورة جديدة
 document.addEventListener('click',()=>{try{ac=ac||new AudioContext();ac.resume()}catch(e){}});
 function beep(){try{const o=ac.createOscillator();o.connect(ac.destination);o.frequency.value=880;o.start();o.stop(ac.currentTime+.4)}catch(e){}}
 function toast(t,bad){const d=document.createElement('div');d.className='toast'+(bad?' bad':'');d.textContent=t;document.body.append(d);setTimeout(()=>d.remove(),bad?3500:1400)}
@@ -103,10 +121,23 @@ $('t1').onclick=()=>tab(1);$('t2').onclick=()=>tab(2);$('t3').onclick=()=>tab(3)
 /* الطلبات */
 async function loadOrders(){
   const {data}=await sb.from('orders').select('*').in('status',['new','preparing']).order('created_at');
+  ORD=data||[];
   $('list').innerHTML=data&&data.length?data.map(o=>`<div class="ord ${o.status}">
     <div class="oh"><b>ترابيزة ${esc(o.table_no)}</b><span>${new Date(o.created_at).toLocaleTimeString('ar-EG',{hour:'2-digit',minute:'2-digit'})}</span></div>
     <ul>${o.items.map(x=>`<li style="direction:ltr;text-align:left">${x.qty} × ${esc(x.name)}</li>`).join('')}</ul>
-    <div class="oh"><b>${o.total} ج.م</b>${o.status==='new'?`<button onclick="st(${o.id},'preparing')">بدأ التحضير</button>`:`<button onclick="st(${o.id},'done')">تم التسليم</button>`}</div></div>`).join(''):'<p class="msg">لا توجد طلبات حالياً.</p>';
+    <div class="oh"><b>${o.total} ج.م</b><span class="acts"><button class="alt" onclick="printOrder(${o.id})">طباعة إيصال</button>${o.status==='new'?`<button onclick="st(${o.id},'preparing')">بدأ التحضير</button>`:`<button onclick="st(${o.id},'done')">تم التسليم</button>`}</span></div></div>`).join(''):'<p class="msg">لا توجد طلبات حالياً.</p>';
+}
+
+function printOrder(id){
+  const o=ORD.find(x=>x.id===id);if(!o)return;
+  const t=new Date(o.created_at);
+  $('rc').innerHTML=`<div class="rc-h">360 CAFE</div>
+  <div class="rc-s">طلب رقم ${o.id} · ترابيزة ${esc(o.table_no)}</div>
+  <div class="rc-s">${t.toLocaleDateString('ar-EG')} ${t.toLocaleTimeString('ar-EG',{hour:'2-digit',minute:'2-digit'})}</div><hr>
+  ${o.items.map(x=>`<div class="rc-r"><span style="direction:ltr">${x.qty} × ${esc(x.name)}</span><span>${x.qty*x.price}</span></div>`).join('')}<hr>
+  <div class="rc-r rc-t"><span>الإجمالي</span><span>${o.total} ج.م</span></div><hr>
+  <div class="rc-s">شكراً لزيارتكم</div>`;
+  window.print();
 }
 async function st(id,s){await sb.from('orders').update({status:s}).eq('id',id);loadOrders()}
 function listen(){
